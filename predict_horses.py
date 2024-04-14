@@ -20,6 +20,17 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.impute import SimpleImputer
 from typing import List
+import warnings
+
+# To ignore all warnings:
+warnings.filterwarnings('ignore')
+
+# To ignore specific warnings by category:
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# To ignore a specific warning by message:
+warnings.filterwarnings('ignore', message='X has feature names, but StandardScaler was fitted without feature names')
+
 
 
 
@@ -47,7 +58,7 @@ def inital_set_up():
         exit()
         
     # read the combined data file into a dataframe
-    combined_df = pd.read_csv(combined_file)
+    combined_df = pd.read_csv(combined_file, low_memory=False)
     
     # check if the combined data file is empty
     if combined_df.empty:
@@ -69,67 +80,58 @@ def inital_set_up():
 def create_model(combined_df, models_dir='models'):
     print("Model file not found. Training a new model...")
     
-    # Filtering out specific positions
-    positions_to_remove = ['nk', 'dist', 'pu', 'ur', 'f', 'ro', 'su']
-    combined_df = combined_df[~combined_df['position'].isin(positions_to_remove)]
-    
-    combined_df['position'] = combined_df['position'].astype(int)
-    
-    
-    # Assuming 'position' is the target and rest are features
+    # Ensure correct types and handle missing values
+    combined_df['position'] = pd.to_numeric(combined_df['position'], errors='coerce')
+    combined_df.dropna(subset=['position'], inplace=True)
+    combined_df.loc[:, 'position'] = combined_df['position'].astype(int)
+
+    # Replace specific strings in 'position' with 0 using a dictionary for multiple replacements
+    replacements = {'nk': 0, 'dist': 0, 'pu': 0, 'ur': 0, 'f': 0, 'ro': 0, 'su': 0}
+    combined_df.loc[:, 'position'] = combined_df['position'].replace(replacements)
+
+    # Convert columns to numeric and handle non-numeric entries by coercion
+    numeric_columns = ['age', 'decimalPrice', 'isFav', 'RPR', 'TR', 'OR', 'runners', 'margin', 'weight']
+    for column in numeric_columns:
+        combined_df.loc[:, column] = pd.to_numeric(combined_df[column], errors='coerce')
+
+    # Assuming 'position' is the target and the rest are features
     feature_cols = ['age', 'decimalPrice', 'isFav', 'RPR', 'TR', 'OR', 'runners', 'margin', 'weight']
     X = combined_df[feature_cols]
     y = combined_df['position']
     
-    
-    
-    # Ensure there's no class with only 1 member
+    # Ensure no class has less than 2 instances
     class_counts = y.value_counts()
-    min_class_count = class_counts.min()
-    if min_class_count < 2:
-        # Handling classes with less than 2 instances
-        y = y[y.isin(class_counts[class_counts >= 2].index)]
-        X = X.loc[y.index]
-    
-    # Continue with your existing setup
+    if class_counts.min() < 2:
+        valid_classes = class_counts[class_counts >= 2].index
+        X = X.loc[y.isin(valid_classes)]
+        y = y[y.isin(valid_classes)]
+
+    # Splitting the dataset
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
     
+    # Preprocessing steps
+    imputer = SimpleImputer(strategy='mean')
+    scaler = StandardScaler()
     
-    imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
     X_train = imputer.fit_transform(X_train)
+    X_train = scaler.fit_transform(X_train)
     X_test = imputer.transform(X_test)
+    X_test = scaler.transform(X_test)
     
-    scaler = StandardScaler().fit(X_train)
-    X_train_scaled = scaler.transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    # Feature selection
+    selector = SelectKBest(score_func=f_classif, k=9)
+    X_train = selector.fit_transform(X_train, y_train)
+    X_test = selector.transform(X_test)
     
-    selector = SelectKBest(f_classif, k=9)
-    X_train_scaled = selector.fit_transform(X_train_scaled, y_train)
-    
-    # Adjusting n_splits based on the smallest class size
-    n_splits = min(class_counts[class_counts >= 2].min(), 5)  # Ensure at least 2 instances per class, use 5 or fewer splits
-    cv_strategy = StratifiedKFold(n_splits=n_splits)
-    
-    # Grid Search for Hyperparameter Tuning
-    # param_grid = {'n_estimators': [100, 200], 'max_depth': [None, 10, 20], 'min_samples_split': [2, 5]}
-    # grid_search = GridSearchCV(RandomForestClassifier(random_state=42), param_grid, cv=cv_strategy, scoring='accuracy')
-    # grid_search.fit(X_train_scaled, y_train)
-    # print('Best parameters:', grid_search.best_params_)
-    # print('Best score:', grid_search.best_score_)
-    
-    # Selected features based on importance
+    # Model training
     model = RandomForestClassifier(n_estimators=100, max_depth=None, min_samples_split=2, random_state=42)
-    model.fit(X_train_scaled, y_train)
-    
-    # Cross-validation with the adjusted strategy
-    scores = cross_val_score(model, X_train_scaled, y_train, cv=cv_strategy)
-    print("Cross-validation scores:", scores)
+    model.fit(X_train, y_train)
     
     # Model evaluation
-    y_pred = model.predict(X_test_scaled)
-    print('Accuracy:', accuracy_score(y_test, y_pred))
-    print('Classification Report:\n', classification_report(y_test, y_pred))
-    print('Confusion Matrix:\n', confusion_matrix(y_test, y_pred))
+    y_pred = model.predict(X_test)
+    print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
+    print(f'Classification Report:\n{classification_report(y_test, y_pred)}')
+    print(f'Confusion Matrix:\n{confusion_matrix(y_test, y_pred)}')
     
     # Save model and scaler
     if not os.path.exists(models_dir):
@@ -166,6 +168,8 @@ def load_model(model_file, scaler_file, combined_df):
     feature_cols = ['age', 'decimalPrice', 'isFav', 'RPR', 'TR', 'OR', 'runners', 'margin', 'weight']
     return model, scaler, feature_cols
 
+
+# Not Used, Please see next function
 def predict_horses(model, scaler, feature_cols, horse_names, combined_df):
     # look at all the horses data and predict the positions of the horses and return the predictions with cofidence percentage and precetage of the horses winning 1st place
     for horse_name in horse_names:
@@ -223,11 +227,16 @@ def predict_and_rank_horses(model, scaler, feature_cols, race_data):
         # predict the horse position probabilities
         position_probs = model.predict_proba(horse_features_scaled)[0]
         
+        try:
+            position_prob = position_probs[int(position)-1]
+        except IndexError:
+            position_prob = 0  # or some sensible default or error handling
+        
         # get the probability of the horse winning
         win_prob = position_probs[0]
         
         # store the horse name, position, and win probability and confidence
-        predictions.append((horse_name, position, win_prob, position_probs[position-1]))
+        predictions.append((horse_name, position, win_prob, position_prob))
         
     # sort the predictions by win probability
     predictions.sort(key=lambda x: x[2], reverse=True)
