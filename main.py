@@ -6,6 +6,7 @@ from predict_horses import predict_my_horse
 
 def main(args: Namespace) -> None:
     horses: List[str] = []
+    print("when completed press enter or type 'done'")
     
     while True:
         horse = input("Enter the name of the horse: ")
